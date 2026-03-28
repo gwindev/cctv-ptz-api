@@ -1,0 +1,12 @@
+services:
+  ptz-api:
+    build: .
+    container_name: ptz-api
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+    volumes:
+      - ./cameras.json:/app/cameras.json
+      - ./presets.json:/app/presets.json
+    restart: unless-stopped
