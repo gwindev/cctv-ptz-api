@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import math
 import os
@@ -8,15 +7,13 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List
-
+import requests
 from flask import Flask, jsonify, render_template, request, Response, send_from_directory
-
 from drivers.axis_vapix import AxisVapixDriver
 from drivers.hikvision_isapi import HikvisionIsapiDriver
 from drivers.base import PTZDriverError
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_FILE = BASE_DIR / "cameras.json"
 PRESET_FILE = BASE_DIR / "presets.json"
 
 app = Flask(__name__)
@@ -37,18 +34,91 @@ class CameraConfig:
     snapshot_path: str | None = None
 
 
-def load_cameras() -> Dict[str, CameraConfig]:
-    if not DATA_FILE.exists():
+STREAMIN_BASE_URL = (os.getenv("STREAMIN_BASE_URL") or "http://main-api:80").rstrip("/")
+STREAMIN_CCTV_URL = f"{STREAMIN_BASE_URL}/api/streamin/cctvs"
+
+
+def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
+    try:
+        resp = requests.get(STREAMIN_CCTV_URL, timeout=8)
+        if resp.status_code != 200:
+            return {}
+
+        json_data = resp.json()
+        if not (json_data.get("success") and json_data.get("data")):
+            return {}
+
+        cameras = {}
+        for item in json_data["data"].get("cctvs", []):
+            cctv_id = str(item.get("cctv_id"))
+            if not cctv_id:
+                continue
+
+            cameras[cctv_id] = CameraConfig(
+                id=cctv_id,
+                name=str(item.get("cctv_name", "")),
+                brand=str(item.get("model", "hikvision") or "hikvision"),
+                host=str(item.get("ip_address", "")),
+                username=str(item.get("username", "") or ""),
+                password=str(item.get("password", "") or ""),
+                protocol="http",
+                port=80,
+                channel=1,
+                verify_tls=False,
+                snapshot_path=item.get("snapshot_path"),
+            )
+        return cameras
+    except Exception as exc:
+        print(f"Failed to fetch cameras from streamin: {exc}")
         return {}
-    raw = json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    return {item["id"]: CameraConfig(**item) for item in raw}
+
+
+def _load_cameras_from_file() -> Dict[str, CameraConfig]:
+    if not os.path.exists(BASE_DIR / "cameras.json"):
+        return {}
+
+    try:
+        raw = json.loads((BASE_DIR / "cameras.json").read_text(encoding="utf-8"))
+        return {str(item["id"]): CameraConfig(**item) for item in raw}
+    except Exception as exc:
+        print(f"Failed to load cameras.json: {exc}")
+        return {}
+
+
+def load_cameras() -> Dict[str, CameraConfig]:
+    # Prefer stream-service data; fallback to local cache if stream is unavailable.
+    cameras = _load_cameras_from_streamin()
+    if cameras:
+        return cameras
+    return _load_cameras_from_file()
+
+
+def refresh_cameras() -> int:
+    fresh = _load_cameras_from_streamin()
+    if not fresh:
+        return 0
+    CAMERAS.clear()
+    CAMERAS.update(fresh)
+    return len(CAMERAS)
+
+
+def get_camera_or_refresh(camera_id: str) -> CameraConfig | None:
+    camera = CAMERAS.get(camera_id)
+    if camera:
+        return camera
+    refresh_cameras()
+    return CAMERAS.get(camera_id)
 
 
 def save_cameras(cameras: Dict[str, CameraConfig]) -> None:
-    DATA_FILE.write_text(
-        json.dumps([asdict(c) for c in cameras.values()], indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    # no-op or optional persistence depending on policy
+    try:
+        (BASE_DIR / "cameras.json").write_text(
+            json.dumps([asdict(c) for c in cameras.values()], indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 CAMERAS = load_cameras()
@@ -104,7 +174,17 @@ def index():
 
 @app.route("/api/cameras", methods=["GET"])
 def list_cameras():
+    if not CAMERAS:
+        refresh_cameras()
     return jsonify([camera_public_dict(c) for c in CAMERAS.values()])
+
+
+@app.route("/api/cameras/sync", methods=["POST"])
+def sync_cameras():
+    count = refresh_cameras()
+    if count == 0:
+        return jsonify({"ok": False, "error": "Unable to sync cameras from stream-service"}), 502
+    return jsonify({"ok": True, "total": count})
 
 
 @app.route("/api/cameras", methods=["POST"])
@@ -161,7 +241,8 @@ def update_camera(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>", methods=["DELETE"])
 def delete_camera(camera_id: str):
-    if camera_id not in CAMERAS:
+    camera = get_camera_or_refresh(camera_id)
+    if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
     stop_autopan(camera_id)
     CAMERAS.pop(camera_id)
@@ -174,7 +255,7 @@ def delete_camera(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/snapshot")
 def snapshot(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
     try:
@@ -186,7 +267,7 @@ def snapshot(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/test")
 def test_camera(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
     try:
@@ -198,7 +279,7 @@ def test_camera(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/move", methods=["POST"])
 def ptz_move(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
     data = request.get_json(force=True)
@@ -220,7 +301,7 @@ def ptz_move(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/stop", methods=["POST"])
 def ptz_stop(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
     try:
@@ -234,7 +315,7 @@ def ptz_stop(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/click-center", methods=["POST"])
 def ptz_click_center(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -272,7 +353,7 @@ def ptz_click_center(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/zoom-wheel", methods=["POST"])
 def zoom_wheel(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -293,7 +374,7 @@ def zoom_wheel(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/home", methods=["POST"])
 def ptz_home(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -307,7 +388,7 @@ def ptz_home(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/autopan", methods=["POST"])
 def ptz_autopan(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -328,7 +409,8 @@ def ptz_autopan(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/presets", methods=["GET"])
 def list_presets(camera_id: str):
-    if camera_id not in CAMERAS:
+    camera = get_camera_or_refresh(camera_id)
+    if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
     presets = CAMERA_PRESETS.get(camera_id, [])
@@ -337,7 +419,7 @@ def list_presets(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/presets", methods=["POST"])
 def save_preset(camera_id: str):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -366,7 +448,7 @@ def save_preset(camera_id: str):
 
 @app.route("/api/cameras/<camera_id>/ptz/presets/<int:preset_id>/goto", methods=["POST"])
 def goto_preset(camera_id: str, preset_id: int):
-    camera = CAMERAS.get(camera_id)
+    camera = get_camera_or_refresh(camera_id)
     if not camera:
         return jsonify({"ok": False, "error": "Camera not found"}), 404
 
@@ -461,6 +543,5 @@ def stop_autopan(camera_id: str) -> None:
 
 
 if __name__ == "__main__":
-    if not DATA_FILE.exists():
-        save_cameras(CAMERAS)
+    # No cameras.json usage; keep in-memory camera list only
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5001")), debug=True)

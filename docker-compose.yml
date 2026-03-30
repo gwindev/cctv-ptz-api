@@ -6,7 +6,15 @@ services:
       - "5001:5001"
     environment:
       - PORT=5001
+      - STREAMIN_BASE_URL=http://main-api:80
     volumes:
-      - ./cameras.json:/app/cameras.json
       - ./presets.json:/app/presets.json
+    networks:
+      - default
+      - stream_api_net
     restart: unless-stopped
+
+networks:
+  stream_api_net:
+    external: true
+    name: stream-service-api_default
