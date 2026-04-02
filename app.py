@@ -54,10 +54,27 @@ def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
             if not cctv_id:
                 continue
 
+            model = (item.get("model") or item.get("brand") or "").strip().lower()
+            if not model:
+                rtsp_url = str(item.get("rtsp_private", "")).lower()
+                if "axis" in rtsp_url:
+                    model = "axis"
+                elif "hikvision" in rtsp_url or "isapi" in rtsp_url:
+                    model = "hikvision"
+                else:
+                    model = "hikvision"
+
+            if "axis" in model:
+                brand = "axis"
+            elif "hik" in model:
+                brand = "hikvision"
+            else:
+                brand = model or "hikvision"
+
             cameras[cctv_id] = CameraConfig(
                 id=cctv_id,
                 name=str(item.get("cctv_name", "")),
-                brand=str(item.get("model", "hikvision") or "hikvision"),
+                brand=brand,
                 host=str(item.get("ip_address", "")),
                 username=str(item.get("username", "") or ""),
                 password=str(item.get("password", "") or ""),
