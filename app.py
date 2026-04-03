@@ -3,12 +3,11 @@ import json
 import math
 import os
 import threading
-import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List
 import requests
-from flask import Flask, jsonify, render_template, request, Response, send_from_directory
+from flask import Flask, jsonify, render_template, request, Response
 from drivers.axis_vapix import AxisVapixDriver
 from drivers.hikvision_isapi import HikvisionIsapiDriver
 from drivers.base import PTZDriverError
