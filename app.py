@@ -484,6 +484,74 @@ def favicon():
     return ("", 204)
 
 
+def _lookup_camera_by_ip(ip: str) -> CameraConfig | None:
+    """Find a camera whose host matches the given IP address."""
+    for cam in CAMERAS.values():
+        if cam.host == ip:
+            return cam
+    return None
+
+
+@app.route("/api/cameras/<camera_id>/ptz/position", methods=["GET"])
+def ptz_get_position(camera_id: str):
+    camera = get_camera_or_refresh(camera_id)
+    if not camera:
+        return jsonify({"ok": False, "error": "Camera not found"}), 404
+    try:
+        pan, tilt, zoom = get_driver(camera).get_position()
+        return jsonify({
+            "ok": True,
+            "name": camera.name,
+            "pan": pan,
+            "tilt": tilt,
+            "zoom": zoom,
+        })
+    except PTZDriverError as exc:
+        return jsonify({"ok": False, "error": "ไม่สามารถเข้าถึงบริการ PTZ บนกล้องตัวนี้ได้", "detail": str(exc)}), 502
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/getposition", methods=["POST"])
+def getposition():
+    data = request.get_json(force=True) or {}
+    cctv_id_or_ip = str(data.get("cctv_id_or_ip", "")).strip()
+    if not cctv_id_or_ip:
+        return jsonify({"ok": False, "error": "cctv_id_or_ip is required"}), 400
+
+    if "." in cctv_id_or_ip:
+        camera = _lookup_camera_by_ip(cctv_id_or_ip)
+        if not camera:
+            refresh_cameras()
+            camera = _lookup_camera_by_ip(cctv_id_or_ip)
+    else:
+        camera = get_camera_or_refresh(cctv_id_or_ip)
+
+    if not camera:
+        return jsonify({"ok": False, "error": "ไม่พบข้อมูลกล้องที่ต้องการ"}), 404
+
+    try:
+        pan, tilt, zoom = get_driver(camera).get_position()
+        return jsonify({
+            "ok": True,
+            "message": "ดึงข้อมูลตำแหน่ง PTZ สำเร็จ",
+            "data": {
+                "name": camera.name,
+                "pan": pan,
+                "tilt": tilt,
+                "zoom": zoom,
+            },
+        })
+    except PTZDriverError as exc:
+        return jsonify({
+            "ok": False,
+            "error": "ไม่สามารถเข้าถึงบริการ PTZ บนกล้องตัวนี้ได้",
+            "detail": str(exc),
+        }), 502
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Error: {str(exc)}"}), 500
+
+
 def camera_public_dict(camera: CameraConfig) -> dict:
     data = asdict(camera)
     data.pop("password", None)
@@ -556,6 +624,7 @@ def stop_autopan(camera_id: str) -> None:
         return
     _, stop_event = thread_info
     stop_event.set()
+
 
 
 if __name__ == "__main__":

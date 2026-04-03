@@ -70,3 +70,15 @@ class AxisVapixDriver(BasePTZDriver):
 
     def go_home(self):
         self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&move=home")
+
+    def get_position(self) -> Tuple[float, float, float]:
+        resp = self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&query=position")
+        values: dict[str, str] = {}
+        for line in resp.text.strip().splitlines():
+            if "=" in line:
+                key, _, val = line.partition("=")
+                values[key.strip().lower()] = val.strip()
+        pan = float(values.get("pan", 0))
+        tilt = float(values.get("tilt", 0))
+        zoom = float(values.get("zoom", 1))
+        return pan, tilt, zoom

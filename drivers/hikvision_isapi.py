@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import Tuple
 
 import requests
@@ -89,3 +90,20 @@ class HikvisionIsapiDriver(BasePTZDriver):
             "PUT",
             f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/homeposition/goto",
         )
+
+    def get_position(self) -> Tuple[float, float, float]:
+        resp = self._request("GET", f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/status")
+        root = ET.fromstring(resp.text)
+
+        def _find(tag: str) -> str | None:
+            for el in root.iter():
+                if el.tag.split("}")[-1] == tag:
+                    return el.text
+            return None
+
+        # Hikvision reports azimuth in units of 0.1°  (0–3600) and
+        # elevation in units of 0.1° (-900–900).
+        azimuth = float(_find("azimuth") or 0) / 10.0
+        elevation = float(_find("elevation") or 0) / 10.0
+        absolute_zoom = float(_find("absoluteZoom") or 0)
+        return azimuth, elevation, absolute_zoom

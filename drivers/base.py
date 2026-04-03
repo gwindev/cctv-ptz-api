@@ -28,6 +28,9 @@ class BasePTZDriver(ABC):
     def stop(self):
         raise NotImplementedError
 
+    def get_position(self) -> Tuple[float, float, float]:
+        raise PTZDriverError("get_position is not supported by this camera driver")
+
     def goto_preset(self, preset_id: int):
         raise PTZDriverError("goto_preset is not supported by this camera driver")
 
