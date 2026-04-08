@@ -7,7 +7,9 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List
 import requests
-from flask import Flask, jsonify, render_template, request, Response
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from drivers.axis_vapix import AxisVapixDriver
 from drivers.hikvision_isapi import HikvisionIsapiDriver
 from drivers.base import PTZDriverError
@@ -15,7 +17,13 @@ from drivers.base import PTZDriverError
 BASE_DIR = Path(__file__).resolve().parent
 PRESET_FILE = BASE_DIR / "presets.json"
 
-app = Flask(__name__)
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 
 @dataclass
@@ -169,47 +177,33 @@ def get_driver(camera: CameraConfig):
     raise PTZDriverError(f"Unsupported brand: {camera.brand}")
 
 
-@app.before_request
-def handle_options():
-    if request.method == "OPTIONS":
-        return ("", 204)
-
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
-    return response
-
-
-@app.route("/")
+@app.get("/", response_class=HTMLResponse)
 def index():
-    return render_template("index.html")
+    return HTMLResponse("<html><body><h1>PTZ API</h1><p>Use /api/cameras endpoints.</p></body></html>")
 
 
-@app.route("/api/cameras", methods=["GET"])
+@app.get("/api/cameras")
 def list_cameras():
     if not CAMERAS:
         refresh_cameras()
-    return jsonify([camera_public_dict(c) for c in CAMERAS.values()])
+    return JSONResponse(content=[camera_public_dict(c) for c in CAMERAS.values()])
 
 
-@app.route("/api/cameras/sync", methods=["POST"])
-def sync_cameras():
+@app.post("/api/cameras/sync")
+async def sync_cameras():
     count = refresh_cameras()
     if count == 0:
-        return jsonify({"ok": False, "error": "Unable to sync cameras from stream-service"}), 502
-    return jsonify({"ok": True, "total": count})
+        return JSONResponse(content={"ok": False, "error": "Unable to sync cameras from stream-service"}, status_code=502)
+    return JSONResponse(content={"ok": True, "total": count})
 
 
-@app.route("/api/cameras", methods=["POST"])
-def create_camera():
-    data = request.get_json(force=True)
+@app.post("/api/cameras")
+async def create_camera(request: Request):
+    data = await request.json()
     required = ["id", "name", "brand", "host", "username", "password"]
     missing = [k for k in required if not data.get(k)]
     if missing:
-        return jsonify({"ok": False, "error": f"Missing fields: {', '.join(missing)}"}), 400
+        return JSONResponse(content={"ok": False, "error": f"Missing fields: {', '.join(missing)}"}, status_code=400)
 
     camera = CameraConfig(
         id=str(data["id"]),
@@ -226,14 +220,14 @@ def create_camera():
     )
     CAMERAS[camera.id] = camera
     save_cameras(CAMERAS)
-    return jsonify({"ok": True, "camera": camera_public_dict(camera)})
+    return JSONResponse(content={"ok": True, "camera": camera_public_dict(camera)})
 
 
-@app.route("/api/cameras/<camera_id>", methods=["PUT"])
-def update_camera(camera_id: str):
+@app.put("/api/cameras/{camera_id}")
+async def update_camera(camera_id: str, request: Request):
     if camera_id not in CAMERAS:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
-    data = request.get_json(force=True)
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
+    data = await request.json()
     camera = CAMERAS[camera_id]
     for field in [
         "name",
@@ -252,53 +246,53 @@ def update_camera(camera_id: str):
     if "verify_tls" in data:
         camera.verify_tls = bool(data["verify_tls"])
     save_cameras(CAMERAS)
-    return jsonify({"ok": True, "camera": camera_public_dict(camera)})
+    return JSONResponse(content={"ok": True, "camera": camera_public_dict(camera)})
 
 
-@app.route("/api/cameras/<camera_id>", methods=["DELETE"])
+@app.delete("/api/cameras/{camera_id}")
 def delete_camera(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
     stop_autopan(camera_id)
     CAMERAS.pop(camera_id)
     save_cameras(CAMERAS)
     if camera_id in CAMERA_PRESETS:
         CAMERA_PRESETS.pop(camera_id, None)
         save_presets(CAMERA_PRESETS)
-    return jsonify({"ok": True})
+    return JSONResponse(content={"ok": True})
 
 
-@app.route("/api/cameras/<camera_id>/snapshot")
+@app.get("/api/cameras/{camera_id}/snapshot")
 def snapshot(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
     try:
         image_bytes, content_type = get_driver(camera).get_snapshot()
-        return Response(image_bytes, content_type=content_type)
+        return Response(content=image_bytes, media_type=content_type)
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/test")
+@app.get("/api/cameras/{camera_id}/test")
 def test_camera(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
     try:
         info = get_driver(camera).test_connection()
-        return jsonify({"ok": True, "info": info})
+        return JSONResponse(content={"ok": True, "info": info})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/move", methods=["POST"])
-def ptz_move(camera_id: str):
+@app.post("/api/cameras/{camera_id}/ptz/move")
+async def ptz_move(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
-    data = request.get_json(force=True)
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
+    data = await request.json()
     pan = clamp(float(data.get("pan", 0.0)), -1.0, 1.0)
     tilt = clamp(float(data.get("tilt", 0.0)), -1.0, 1.0)
     zoom = clamp(float(data.get("zoom", 0.0)), -1.0, 1.0)
@@ -310,32 +304,32 @@ def ptz_move(camera_id: str):
         driver.continuous_move(pan=pan, tilt=tilt, zoom=zoom)
         if duration_ms > 0:
             schedule_stop(camera_id, duration_ms)
-        return jsonify({"ok": True})
+        return JSONResponse(content={"ok": True})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/stop", methods=["POST"])
+@app.post("/api/cameras/{camera_id}/ptz/stop")
 def ptz_stop(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
     try:
         cancel_timer(camera_id)
         stop_autopan(camera_id)
         get_driver(camera).stop()
-        return jsonify({"ok": True})
+        return JSONResponse(content={"ok": True})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/click-center", methods=["POST"])
-def ptz_click_center(camera_id: str):
+@app.post("/api/cameras/{camera_id}/ptz/click-center")
+async def ptz_click_center(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
-    data = request.get_json(force=True)
+    data = await request.json()
     x = clamp(float(data.get("x", 0.5)), 0.0, 1.0)
     y = clamp(float(data.get("y", 0.5)), 0.0, 1.0)
     sensitivity = clamp(float(data.get("sensitivity", 1.0)), 0.2, 2.0)
@@ -345,7 +339,7 @@ def ptz_click_center(camera_id: str):
 
     # dead zone รอบกลางภาพ
     if abs(dx) < 0.03 and abs(dy) < 0.03:
-        return jsonify({"ok": True, "message": "within dead zone"})
+        return JSONResponse(content={"ok": True, "message": "within dead zone"})
 
     pan = clamp(dx * 2.0 * sensitivity, -1.0, 1.0)
     tilt = clamp(-dy * 2.0 * sensitivity, -1.0, 1.0)
@@ -357,23 +351,23 @@ def ptz_click_center(camera_id: str):
         driver = get_driver(camera)
         driver.continuous_move(pan=pan, tilt=tilt, zoom=0)
         schedule_stop(camera_id, duration_ms)
-        return jsonify({
+        return JSONResponse(content={
             "ok": True,
             "pan": pan,
             "tilt": tilt,
             "duration_ms": duration_ms,
         })
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/zoom-wheel", methods=["POST"])
-def zoom_wheel(camera_id: str):
+@app.post("/api/cameras/{camera_id}/ptz/zoom-wheel")
+async def zoom_wheel(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
-    data = request.get_json(force=True)
+    data = await request.json()
     delta = float(data.get("delta", 0.0))
     zoom = clamp(delta, -1.0, 1.0)
     duration_ms = int(data.get("duration_ms", 180))
@@ -383,32 +377,32 @@ def zoom_wheel(camera_id: str):
         driver = get_driver(camera)
         driver.continuous_move(pan=0, tilt=0, zoom=zoom)
         schedule_stop(camera_id, duration_ms)
-        return jsonify({"ok": True})
+        return JSONResponse(content={"ok": True})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/home", methods=["POST"])
+@app.post("/api/cameras/{camera_id}/ptz/home")
 def ptz_home(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
     try:
         stop_autopan(camera_id)
         get_driver(camera).go_home()
-        return jsonify({"ok": True})
+        return JSONResponse(content={"ok": True})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/autopan", methods=["POST"])
-def ptz_autopan(camera_id: str):
+@app.post("/api/cameras/{camera_id}/ptz/autopan")
+async def ptz_autopan(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
-    data = request.get_json(force=True)
+    data = await request.json()
     enable = bool(data.get("enable", False))
     speed = clamp(float(data.get("speed", 0.4)), 0.1, 1.0)
     interval_ms = int(clamp(float(data.get("interval_ms", 1500)), 300, 10000))
@@ -418,37 +412,37 @@ def ptz_autopan(camera_id: str):
             start_autopan(camera_id, speed=speed, interval_ms=interval_ms)
         else:
             stop_autopan(camera_id)
-        return jsonify({"ok": True, "enable": enable, "speed": speed, "interval_ms": interval_ms})
+        return JSONResponse(content={"ok": True, "enable": enable, "speed": speed, "interval_ms": interval_ms})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/api/cameras/<camera_id>/ptz/presets", methods=["GET"])
+@app.get("/api/cameras/{camera_id}/ptz/presets")
 def list_presets(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
     presets = CAMERA_PRESETS.get(camera_id, [])
-    return jsonify({"ok": True, "presets": presets})
+    return JSONResponse(content={"ok": True, "presets": presets})
 
 
-@app.route("/api/cameras/<camera_id>/ptz/presets", methods=["POST"])
-def save_preset(camera_id: str):
+@app.post("/api/cameras/{camera_id}/ptz/presets")
+async def save_preset(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
-    data = request.get_json(force=True)
+    data = await request.json()
     preset_id = int(data.get("preset_id", 0))
     preset_name = str(data.get("preset_name") or f"Preset {preset_id}")
     if preset_id <= 0:
-        return jsonify({"ok": False, "error": "preset_id must be > 0"}), 400
+        return JSONResponse(content={"ok": False, "error": "preset_id must be > 0"}, status_code=400)
 
     try:
         get_driver(camera).set_preset(preset_id)
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
     presets = CAMERA_PRESETS.setdefault(camera_id, [])
     existing = next((p for p in presets if int(p.get("id", 0)) == preset_id), None)
@@ -459,29 +453,29 @@ def save_preset(camera_id: str):
         presets.sort(key=lambda p: int(p.get("id", 0)))
 
     save_presets(CAMERA_PRESETS)
-    return jsonify({"ok": True, "presets": presets})
+    return JSONResponse(content={"ok": True, "presets": presets})
 
 
-@app.route("/api/cameras/<camera_id>/ptz/presets/<int:preset_id>/goto", methods=["POST"])
-def goto_preset(camera_id: str, preset_id: int):
+@app.post("/api/cameras/{camera_id}/ptz/presets/{preset_id}/goto")
+async def goto_preset(camera_id: str, preset_id: int):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
 
     if preset_id <= 0:
-        return jsonify({"ok": False, "error": "preset_id must be > 0"}), 400
+        return JSONResponse(content={"ok": False, "error": "preset_id must be > 0"}, status_code=400)
 
     try:
         stop_autopan(camera_id)
         get_driver(camera).goto_preset(preset_id)
-        return jsonify({"ok": True, "preset_id": preset_id})
+        return JSONResponse(content={"ok": True, "preset_id": preset_id})
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.route("/favicon.ico")
+@app.get("/favicon.ico")
 def favicon():
-    return ("", 204)
+    return Response(status_code=204)
 
 
 def _lookup_camera_by_ip(ip: str) -> CameraConfig | None:
@@ -492,14 +486,14 @@ def _lookup_camera_by_ip(ip: str) -> CameraConfig | None:
     return None
 
 
-@app.route("/api/cameras/<camera_id>/ptz/position", methods=["GET"])
+@app.get("/api/cameras/{camera_id}/ptz/position")
 def ptz_get_position(camera_id: str):
     camera = get_camera_or_refresh(camera_id)
     if not camera:
-        return jsonify({"ok": False, "error": "Camera not found"}), 404
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
     try:
         pan, tilt, zoom = get_driver(camera).get_position()
-        return jsonify({
+        return JSONResponse(content={
             "ok": True,
             "name": camera.name,
             "pan": pan,
@@ -507,17 +501,17 @@ def ptz_get_position(camera_id: str):
             "zoom": zoom,
         })
     except PTZDriverError as exc:
-        return jsonify({"ok": False, "error": "ไม่สามารถเข้าถึงบริการ PTZ บนกล้องตัวนี้ได้", "detail": str(exc)}), 502
+        return JSONResponse(content={"ok": False, "error": "ไม่สามารถเข้าถึงบริการ PTZ บนกล้องตัวนี้ได้", "detail": str(exc)}, status_code=502)
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=500)
 
 
-@app.route("/api/getposition", methods=["POST"])
-def getposition():
-    data = request.get_json(force=True) or {}
+@app.post("/api/getposition")
+async def getposition(request: Request):
+    data = await request.json() or {}
     cctv_id_or_ip = str(data.get("cctv_id_or_ip", "")).strip()
     if not cctv_id_or_ip:
-        return jsonify({"ok": False, "error": "cctv_id_or_ip is required"}), 400
+        return JSONResponse(content={"ok": False, "error": "cctv_id_or_ip is required"}, status_code=400)
 
     if "." in cctv_id_or_ip:
         camera = _lookup_camera_by_ip(cctv_id_or_ip)
@@ -528,11 +522,11 @@ def getposition():
         camera = get_camera_or_refresh(cctv_id_or_ip)
 
     if not camera:
-        return jsonify({"ok": False, "error": "ไม่พบข้อมูลกล้องที่ต้องการ"}), 404
+        return JSONResponse(content={"ok": False, "error": "ไม่พบข้อมูลกล้องที่ต้องการ"}, status_code=404)
 
     try:
         pan, tilt, zoom = get_driver(camera).get_position()
-        return jsonify({
+        return JSONResponse(content={
             "ok": True,
             "message": "ดึงข้อมูลตำแหน่ง PTZ สำเร็จ",
             "data": {
@@ -543,13 +537,13 @@ def getposition():
             },
         })
     except PTZDriverError as exc:
-        return jsonify({
+        return JSONResponse(content={
             "ok": False,
             "error": "ไม่สามารถเข้าถึงบริการ PTZ บนกล้องตัวนี้ได้",
             "detail": str(exc),
-        }), 502
+        }, status_code=502)
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"Error: {str(exc)}"}), 500
+        return JSONResponse(content={"ok": False, "error": f"Error: {str(exc)}"}, status_code=500)
 
 
 def camera_public_dict(camera: CameraConfig) -> dict:
@@ -624,9 +618,3 @@ def stop_autopan(camera_id: str) -> None:
         return
     _, stop_event = thread_info
     stop_event.set()
-
-
-
-if __name__ == "__main__":
-    # No cameras.json usage; keep in-memory camera list only
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5001")), debug=True)

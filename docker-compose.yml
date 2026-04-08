@@ -1,11 +1,10 @@
 services:
-  ptz-api:
+  ptz:
     build: .
-    container_name: ptz-api
+    container_name: ptz
     ports:
-      - "5001:5001"
+      - "5001:80"
     environment:
-      - PORT=5001
       - STREAMIN_BASE_URL=http://main-api:80
     volumes:
       - ./presets.json:/app/presets.json
