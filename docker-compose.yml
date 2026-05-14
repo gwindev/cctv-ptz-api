@@ -1,19 +1,13 @@
 services:
   ptz:
     build: .
+    image: ptz
     container_name: ptz
     ports:
       - "5001:80"
     environment:
-      - STREAMIN_BASE_URL=http://main-api:80
+      - STREAMIN_BASE_URL=http://mainapi:80
     volumes:
       - ./presets.json:/app/presets.json
-    networks:
-      - default
-      - stream_api_net
     restart: unless-stopped
-
-networks:
-  stream_api_net:
-    external: true
-    name: stream-service-api_default
+    # ไม่ต้องกำหนด networks จะใช้ defaultk  
