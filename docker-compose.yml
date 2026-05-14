@@ -9,5 +9,11 @@ services:
       - STREAMIN_BASE_URL=http://mainapi:80
     volumes:
       - ./presets.json:/app/presets.json
+    networks:
+      - stream_network
     restart: unless-stopped
     # ไม่ต้องกำหนด networks จะใช้ defaultk  
+
+networks:
+  stream_network:
+    external: true
