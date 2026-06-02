@@ -6,13 +6,12 @@ services:
     ports:
       - "5001:80"
     environment:
-      - STREAMIN_BASE_URL=http://mainapi:80
+      - STREAMIN_BASE_URL=http://mainapi
     volumes:
       - ./presets.json:/app/presets.json
     networks:
       - stream_network
     restart: unless-stopped
-    # ไม่ต้องกำหนด networks จะใช้ defaultk  
 
 networks:
   stream_network:

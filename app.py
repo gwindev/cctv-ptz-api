@@ -41,9 +41,8 @@ class CameraConfig:
     snapshot_path: str | None = None
 
 
-STREAMIN_BASE_URL = (os.getenv("STREAMIN_BASE_URL") or "http://main-api:80").rstrip("/")
+STREAMIN_BASE_URL = (os.getenv("STREAMIN_BASE_URL")).rstrip("/")
 STREAMIN_CCTV_URL = f"{STREAMIN_BASE_URL}/api/streamin/cctvs"
-
 
 def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
     try:
@@ -178,6 +177,10 @@ def get_driver(camera: CameraConfig):
 
 
 @app.get("/", response_class=HTMLResponse)
+def index():
+    return HTMLResponse("<html><body><h1>PTZ API</h1><p>Use /api/cameras endpoints.</p></body></html>")
+    
+@app.get("/api", response_class=HTMLResponse)
 def index():
     return HTMLResponse("<html><body><h1>PTZ API</h1><p>Use /api/cameras endpoints.</p></body></html>")
 
