@@ -42,7 +42,8 @@ class CameraConfig:
 
 
 STREAMIN_BASE_URL = (os.getenv("STREAMIN_BASE_URL")).rstrip("/")
-STREAMIN_CCTV_URL = f"{STREAMIN_BASE_URL}/api/streamin/cctvs"
+STREAMIN_CCTV_URL = f"{STREAMIN_BASE_URL}/api/streamin/ptz-cameras"
+
 
 def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
     try:
@@ -55,7 +56,8 @@ def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
             return {}
 
         cameras = {}
-        for item in json_data["data"].get("cctvs", []):
+        for item in json_data["data"].get("cameras", []):
+
             cctv_id = str(item.get("cctv_id"))
             if not cctv_id:
                 continue
@@ -79,7 +81,7 @@ def _load_cameras_from_streamin() -> Dict[str, CameraConfig]:
 
             cameras[cctv_id] = CameraConfig(
                 id=cctv_id,
-                name=str(item.get("cctv_name", "")),
+                name=str(item.get("name") or item.get("cctv_name") or ""),
                 brand=brand,
                 host=str(item.get("ip_address", "")),
                 username=str(item.get("username", "") or ""),

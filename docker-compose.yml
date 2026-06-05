@@ -1,18 +1,19 @@
-services:
-  ptz:
-    build: .
-    image: ptz
-    container_name: ptz
-    ports:
-      - "5001:80"
-    environment:
-      - STREAMIN_BASE_URL=http://mainapi
-    volumes:
-      - ./presets.json:/app/presets.json
-    networks:
-      - stream_network
-    restart: unless-stopped
-
-networks:
-  stream_network:
-    external: true
+# Moved to stream-service-api/docker-compose.yml
+# services:
+#   ptz:
+#     build: .
+#     image: ptz
+#     container_name: ptz
+#     ports:
+#       - "5001:80"
+#     environment:
+#       - STREAMIN_BASE_URL=http://mainapi
+#     volumes:
+#       - ./presets.json:/app/presets.json
+#     networks:
+#       - stream_network
+#     restart: unless-stopped
+#
+# networks:
+#   stream_network:
+#     external: true
