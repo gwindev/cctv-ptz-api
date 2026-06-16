@@ -34,9 +34,15 @@ class BasePTZDriver(ABC):
     def goto_preset(self, preset_id: int):
         raise PTZDriverError("goto_preset is not supported by this camera driver")
 
-    def set_preset(self, preset_id: int):
+    def set_preset(self, preset_id: int, name: str = ""):
         raise PTZDriverError("set_preset is not supported by this camera driver")
 
     def go_home(self):
         # Default fallback attempts to go to preset 1.
         self.goto_preset(1)
+
+    def list_presets(self) -> list:
+        raise PTZDriverError("list_presets is not supported by this camera driver")
+
+    def delete_preset(self, preset_id: int):
+        raise PTZDriverError("delete_preset is not supported by this camera driver")

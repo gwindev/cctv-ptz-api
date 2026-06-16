@@ -65,11 +65,32 @@ class AxisVapixDriver(BasePTZDriver):
     def goto_preset(self, preset_id: int):
         self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&gotoserverpresetno={int(preset_id)}")
 
-    def set_preset(self, preset_id: int):
+    def set_preset(self, preset_id: int, name: str = ""):
         self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&setserverpresetno={int(preset_id)}")
+        if name:
+            import urllib.parse
+            self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&setserverpresetname={int(preset_id)}&presetname={urllib.parse.quote(name)}")
 
     def go_home(self):
         self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&move=home")
+
+    def list_presets(self) -> list:
+        resp = self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&query=presetposall")
+        presets = []
+        for line in resp.text.strip().splitlines():
+            # Format: presetposno1=Home
+            line = line.strip()
+            if line.lower().startswith("presetposno"):
+                try:
+                    key, _, name = line.partition("=")
+                    preset_id = int(key[len("presetposno"):])
+                    presets.append({"id": preset_id, "name": name.strip(), "pan": None, "tilt": None, "zoom": None})
+                except Exception:
+                    pass
+        return presets
+
+    def delete_preset(self, preset_id: int):
+        self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&removeserverpresetno={int(preset_id)}")
 
     def get_position(self) -> Tuple[float, float, float]:
         resp = self._get(f"/axis-cgi/com/ptz.cgi?camera={self.camera.channel}&query=position")

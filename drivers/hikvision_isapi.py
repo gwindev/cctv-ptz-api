@@ -73,10 +73,12 @@ class HikvisionIsapiDriver(BasePTZDriver):
             f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/presets/{int(preset_id)}/goto",
         )
 
-    def set_preset(self, preset_id: int):
+    def set_preset(self, preset_id: int, name: str = ""):
+        preset_name = name or f"Preset {int(preset_id)}"
         xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <PTZPreset>
     <id>{int(preset_id)}</id>
+    <presetName>{preset_name}</presetName>
 </PTZPreset>'''
         self._request(
             "PUT",
@@ -90,6 +92,41 @@ class HikvisionIsapiDriver(BasePTZDriver):
             "PUT",
             f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/homeposition/goto",
         )
+
+    def list_presets(self) -> list:
+        resp = self._request("GET", f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/presets")
+        root = ET.fromstring(resp.text)
+        presets = []
+        for preset_el in root.iter():
+            if preset_el.tag.split("}")[-1] == "PTZPreset":
+                preset_id = None
+                name = ""
+                pan = tilt = zoom = None
+                for child in preset_el:
+                    tag = child.tag.split("}")[-1]
+                    if tag == "id":
+                        try: preset_id = int(child.text)
+                        except Exception: pass
+                    elif tag == "presetName":
+                        name = child.text or ""
+                    elif tag == "AbsoluteHigh":
+                        for coord in child:
+                            ctag = coord.tag.split("}")[-1]
+                            try:
+                                if ctag == "azimuth":
+                                    pan = round(float(coord.text) / 10.0, 1)
+                                elif ctag == "elevation":
+                                    tilt = round(float(coord.text) / 10.0, 1)
+                                elif ctag == "absoluteZoom":
+                                    zoom = round(float(coord.text), 1)
+                            except Exception:
+                                pass
+                if preset_id is not None:
+                    presets.append({"id": preset_id, "name": name, "pan": pan, "tilt": tilt, "zoom": zoom})
+        return presets
+
+    def delete_preset(self, preset_id: int):
+        self._request("DELETE", f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/presets/{int(preset_id)}")
 
     def get_position(self) -> Tuple[float, float, float]:
         resp = self._request("GET", f"/ISAPI/PTZCtrl/channels/{self.camera.channel}/status")

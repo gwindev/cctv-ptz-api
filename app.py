@@ -5,7 +5,7 @@ import os
 import threading
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 import requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +15,6 @@ from drivers.hikvision_isapi import HikvisionIsapiDriver
 from drivers.base import PTZDriverError
 
 BASE_DIR = Path(__file__).resolve().parent
-PRESET_FILE = BASE_DIR / "presets.json"
 
 app = FastAPI()
 app.add_middleware(
@@ -151,25 +150,6 @@ stop_timers: Dict[str, threading.Timer] = {}
 autopan_threads: Dict[str, tuple[threading.Thread, threading.Event]] = {}
 
 
-def load_presets() -> Dict[str, List[dict]]:
-    if not PRESET_FILE.exists():
-        return {}
-    raw = json.loads(PRESET_FILE.read_text(encoding="utf-8"))
-    if isinstance(raw, dict):
-        return raw
-    return {}
-
-
-def save_presets(presets: Dict[str, List[dict]]) -> None:
-    PRESET_FILE.write_text(
-        json.dumps(presets, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-CAMERA_PRESETS = load_presets()
-
-
 def get_driver(camera: CameraConfig):
     if camera.brand.lower() == "axis":
         return AxisVapixDriver(camera)
@@ -262,9 +242,6 @@ def delete_camera(camera_id: str):
     stop_autopan(camera_id)
     CAMERAS.pop(camera_id)
     save_cameras(CAMERAS)
-    if camera_id in CAMERA_PRESETS:
-        CAMERA_PRESETS.pop(camera_id, None)
-        save_presets(CAMERA_PRESETS)
     return JSONResponse(content={"ok": True})
 
 
@@ -422,16 +399,6 @@ async def ptz_autopan(camera_id: str, request: Request):
         return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
 
-@app.get("/api/cameras/{camera_id}/ptz/presets")
-def list_presets(camera_id: str):
-    camera = get_camera_or_refresh(camera_id)
-    if not camera:
-        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
-
-    presets = CAMERA_PRESETS.get(camera_id, [])
-    return JSONResponse(content={"ok": True, "presets": presets})
-
-
 @app.post("/api/cameras/{camera_id}/ptz/presets")
 async def save_preset(camera_id: str, request: Request):
     camera = get_camera_or_refresh(camera_id)
@@ -445,20 +412,11 @@ async def save_preset(camera_id: str, request: Request):
         return JSONResponse(content={"ok": False, "error": "preset_id must be > 0"}, status_code=400)
 
     try:
-        get_driver(camera).set_preset(preset_id)
+        get_driver(camera).set_preset(preset_id, name=preset_name)
     except Exception as exc:
         return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
 
-    presets = CAMERA_PRESETS.setdefault(camera_id, [])
-    existing = next((p for p in presets if int(p.get("id", 0)) == preset_id), None)
-    if existing:
-        existing["name"] = preset_name
-    else:
-        presets.append({"id": preset_id, "name": preset_name})
-        presets.sort(key=lambda p: int(p.get("id", 0)))
-
-    save_presets(CAMERA_PRESETS)
-    return JSONResponse(content={"ok": True, "presets": presets})
+    return JSONResponse(content={"ok": True, "preset_id": preset_id})
 
 
 @app.post("/api/cameras/{camera_id}/ptz/presets/{preset_id}/goto")
@@ -476,6 +434,36 @@ async def goto_preset(camera_id: str, preset_id: int):
         return JSONResponse(content={"ok": True, "preset_id": preset_id})
     except Exception as exc:
         return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
+
+
+@app.delete("/api/cameras/{camera_id}/ptz/presets/{preset_id}")
+def delete_preset(camera_id: str, preset_id: int):
+    camera = get_camera_or_refresh(camera_id)
+    if not camera:
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
+    if preset_id <= 0:
+        return JSONResponse(content={"ok": False, "error": "preset_id must be > 0"}, status_code=400)
+    try:
+        get_driver(camera).delete_preset(preset_id)
+        return JSONResponse(content={"ok": True, "preset_id": preset_id})
+    except PTZDriverError as exc:
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
+    except Exception as exc:
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.get("/api/cameras/{camera_id}/ptz/presets/from-camera")
+def list_presets_from_camera(camera_id: str):
+    camera = get_camera_or_refresh(camera_id)
+    if not camera:
+        return JSONResponse(content={"ok": False, "error": "Camera not found"}, status_code=404)
+    try:
+        presets = get_driver(camera).list_presets()
+        return JSONResponse(content={"ok": True, "presets": presets})
+    except PTZDriverError as exc:
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=502)
+    except Exception as exc:
+        return JSONResponse(content={"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.get("/favicon.ico")
